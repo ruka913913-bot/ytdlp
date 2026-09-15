@@ -59,13 +59,8 @@ jobs:
           import yt_dlp
 
           url = os.environ["YOUTUBE_URL"]
-
-          # Try additional official yt-dlp YouTube clients in order.
-          # Some clients can expose direct Google Video Server formats without
-          # the same requirements as the web client. Availability varies by video.
-          clients = ["tv", "tv_downgraded", "web_embedded", "android_vr"]
-          last_errors = []
-
+          clients = ["tv", "android_vr", "web_embedded", "tv_downgraded"]
+          errors = []
           info = None
           selected_client = None
 
@@ -97,16 +92,16 @@ jobs:
                       selected_client = client
                       break
 
-                  last_errors.append(f"{client}: no googlevideo.com media formats")
+                  errors.append(f"{client}: no googlevideo.com media formats")
               except Exception as exc:
-                  last_errors.append(f"{client}: {exc}")
+                  errors.append(f"{client}: {exc}")
 
           if info is None:
               with open("result.json", "w", encoding="utf-8") as f:
                   json.dump(
                       {
                           "ok": False,
-                          "error": "No supported YouTube client produced googlevideo.com media formats. " + " | ".join(last_errors),
+                          "error": "\n".join(errors) or "No supported YouTube client succeeded.",
                           "input_url": url,
                       },
                       f,
