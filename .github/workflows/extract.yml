@@ -128,8 +128,6 @@ jobs:
               })
 
           def score(fmt):
-              # Prefer a single progressive MP4 with both video and audio,
-              # then higher resolution/bitrate formats.
               return (
                   1 if fmt["has_video"] and fmt["has_audio"] else 0,
                   1 if fmt.get("ext") == "mp4" else 0,
@@ -139,7 +137,6 @@ jobs:
 
           formats.sort(key=score, reverse=True)
 
-          # Remove duplicate URLs while keeping the best-ranked order.
           unique_formats = []
           seen_urls = set()
           for fmt in formats:
