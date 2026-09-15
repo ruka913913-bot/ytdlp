@@ -1,0 +1,200 @@
+name: YouTube URL Extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: "YouTube URL"
+        required: true
+        type: string
+      room_id:
+        description: "Chatwork room ID"
+        required: true
+        type: string
+      message_id:
+        description: "Chatwork message ID"
+        required: true
+        type: string
+      account_id:
+        description: "Chatwork account ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yt-dlp
+        run: python -m pip install --disable-pip-version-check --no-input --upgrade yt-dlp
+
+      - name: Extract media formats
+        id: extract
+        env:
+          YOUTUBE_URL: ${{ inputs.youtube_url }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import sys
+          import yt_dlp
+
+          url = os.environ["YOUTUBE_URL"]
+
+          opts = {
+              "quiet": True,
+              "no_warnings": True,
+              "skip_download": True,
+              "noplaylist": True,
+          }
+
+          try:
+              with yt_dlp.YoutubeDL(opts) as ydl:
+                  info = ydl.extract_info(url, download=False)
+          except Exception as exc:
+              with open("result.json", "w", encoding="utf-8") as f:
+                  json.dump({
+                      "ok": False,
+                      "error": str(exc),
+                  }, f, ensure_ascii=False)
+              sys.exit(0)
+
+          formats = []
+          for fmt in info.get("formats", []):
+              media_url = fmt.get("url")
+              if not media_url or "googlevideo.com" not in media_url:
+                  continue
+
+              formats.append({
+                  "format_id": fmt.get("format_id"),
+                  "ext": fmt.get("ext"),
+                  "resolution": fmt.get("resolution"),
+                  "width": fmt.get("width"),
+                  "height": fmt.get("height"),
+                  "fps": fmt.get("fps"),
+                  "vcodec": fmt.get("vcodec"),
+                  "acodec": fmt.get("acodec"),
+                  "tbr": fmt.get("tbr"),
+                  "url": media_url,
+              })
+
+          # Prefer formats that contain both video and audio, then higher
+          # resolution/bitrate. Keep the result reasonably small for Chatwork.
+          def score(f):
+              has_video = f.get("vcodec") not in (None, "", "none")
+              has_audio = f.get("acodec") not in (None, "", "none")
+              return (
+                  1 if has_video and has_audio else 0,
+                  f.get("height") or 0,
+                  f.get("tbr") or 0,
+              )
+
+          formats.sort(key=score, reverse=True)
+
+          result = {
+              "ok": True,
+              "title": info.get("title") or "YouTube",
+              "id": info.get("id"),
+              "webpage_url": info.get("webpage_url") or url,
+              "formats": formats[:8],
+          }
+
+          with open("result.json", "w", encoding="utf-8") as f:
+              json.dump(result, f, ensure_ascii=False)
+          PY
+
+      - name: Send result to Chatwork
+        if: always()
+        env:
+          CHATWORK_TOKEN: ${{ secrets.CHATWORK_TOKEN }}
+          ROOM_ID: ${{ inputs.room_id }}
+          MESSAGE_ID: ${{ inputs.message_id }}
+          ACCOUNT_ID: ${{ inputs.account_id }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ.get("CHATWORK_TOKEN")
+          if not token:
+              print("CHATWORK_TOKEN is not configured in GitHub Actions Secrets.")
+              sys.exit(1)
+
+          room_id = os.environ["ROOM_ID"]
+          message_id = os.environ["MESSAGE_ID"]
+          account_id = os.environ["ACCOUNT_ID"]
+
+          try:
+              with open("result.json", encoding="utf-8") as f:
+                  result = json.load(f)
+          except Exception:
+              result = {
+                  "ok": False,
+                  "error": "yt-dlp did not produce a result."
+              }
+
+          prefix = f"[rp aid={account_id} to={room_id}-{message_id}]"
+
+          if not result.get("ok"):
+              body = (
+                  prefix + "\n"
+                  "YouTube URLの取得に失敗しました。\n"
+                  "[code]" + str(result.get("error", "unknown error")) + "[/code]"
+              )
+          else:
+              lines = [
+                  prefix,
+                  "[info][title]" + str(result.get("title", "YouTube")) + "[/title]",
+              ]
+
+              formats = result.get("formats", [])
+              if not formats:
+                  lines.append("googlevideo.com の取得可能な形式が見つかりませんでした。")
+              else:
+                  for i, fmt in enumerate(formats, 1):
+                      video = fmt.get("vcodec") or "-"
+                      audio = fmt.get("acodec") or "-"
+                      resolution = fmt.get("resolution") or "-"
+                      ext = fmt.get("ext") or "-"
+                      lines.append(
+                          f"\\n[{i}] {resolution} / {ext} / video={video} / audio={audio}"
+                      )
+                      lines.append("[url]" + fmt["url"] + "[/url]")
+
+              lines.append("[/info]")
+              body = "\\n".join(lines)
+
+          data = urllib.parse.urlencode({
+              "body": body,
+              "self_unread": "0",
+          }).encode()
+
+          req = urllib.request.Request(
+              f"https://api.chatwork.com/v2/rooms/{room_id}/messages",
+              data=data,
+              method="POST",
+              headers={
+                  "x-chatworktoken": token,
+                  "Content-Type": "application/x-www-form-urlencoded",
+              },
+          )
+
+          try:
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  print("Chatwork response:", response.status)
+          except Exception as exc:
+              print("Chatwork API request failed:", exc)
+              sys.exit(1)
+          PY
