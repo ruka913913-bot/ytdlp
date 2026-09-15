@@ -39,8 +39,11 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Install yt-dlp with YouTube support
-        run: python -m pip install --disable-pip-version-check --no-input --upgrade "yt-dlp[default]"
+      - name: Install yt-dlp with official default dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-input --upgrade "yt-dlp[default]"
+          python -m yt_dlp --version
+          deno --version
 
       - name: Extract media formats
         id: extract
@@ -68,7 +71,11 @@ jobs:
                   info = ydl.extract_info(url, download=False)
           except Exception as exc:
               with open("result.json", "w", encoding="utf-8") as f:
-                  json.dump({"ok": False, "error": str(exc)}, f, ensure_ascii=False)
+                  json.dump(
+                      {"ok": False, "error": str(exc)},
+                      f,
+                      ensure_ascii=False,
+                  )
               sys.exit(0)
 
           formats = []
@@ -124,7 +131,7 @@ jobs:
       - name: Send result to Chatwork
         if: always()
         env:
-          CHATWORK_TOKEN: ${{ secrets.CHATWORK_TOKEN }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
           ROOM_ID: ${{ inputs.room_id }}
           MESSAGE_ID: ${{ inputs.message_id }}
           ACCOUNT_ID: ${{ inputs.account_id }}
@@ -136,9 +143,9 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          token = os.environ.get("CHATWORK_TOKEN")
+          token = os.environ.get("CHATWORK_API_TOKEN")
           if not token:
-              print("CHATWORK_TOKEN is not configured in GitHub Actions Secrets.")
+              print("CHATWORK_API_TOKEN is not configured in GitHub Actions Secrets.")
               sys.exit(1)
 
           room_id = os.environ["ROOM_ID"]
