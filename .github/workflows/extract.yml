@@ -39,7 +39,7 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Install yt-dlp with official default dependencies
+      - name: Install yt-dlp
         run: |
           python -m pip install --disable-pip-version-check --no-input --upgrade "yt-dlp[default]"
           python -m yt_dlp --version
@@ -54,7 +54,8 @@ jobs:
           import json
           import os
           import sys
-          from urllib.parse import urlparse
+          from urllib.parse import parse_qs, urlparse
+
           import yt_dlp
 
           url = os.environ["YOUTUBE_URL"]
@@ -64,6 +65,11 @@ jobs:
               "no_warnings": True,
               "skip_download": True,
               "noplaylist": True,
+              "extractor_args": {
+                  "youtube": {
+                      "player_client": ["web_embedded"],
+                  }
+              },
           }
 
           try:
@@ -72,56 +78,83 @@ jobs:
           except Exception as exc:
               with open("result.json", "w", encoding="utf-8") as f:
                   json.dump(
-                      {"ok": False, "error": str(exc)},
+                      {
+                          "ok": False,
+                          "error": str(exc),
+                          "input_url": url,
+                      },
                       f,
                       ensure_ascii=False,
                   )
               sys.exit(0)
 
           formats = []
+
           for fmt in info.get("formats", []):
               media_url = fmt.get("url")
               if not media_url:
                   continue
 
               try:
-                  hostname = (urlparse(media_url).hostname or "").lower()
+                  parsed = urlparse(media_url)
+                  hostname = (parsed.hostname or "").lower()
+                  query = parse_qs(parsed.query)
               except Exception:
                   continue
 
               if not hostname.endswith(".googlevideo.com"):
                   continue
 
+              video_codec = fmt.get("vcodec")
+              audio_codec = fmt.get("acodec")
+              has_video = video_codec not in (None, "", "none")
+              has_audio = audio_codec not in (None, "", "none")
+
               formats.append({
                   "format_id": fmt.get("format_id"),
+                  "itag": query.get("itag", [fmt.get("format_id")])[0],
                   "ext": fmt.get("ext"),
                   "resolution": fmt.get("resolution"),
                   "width": fmt.get("width"),
                   "height": fmt.get("height"),
                   "fps": fmt.get("fps"),
-                  "vcodec": fmt.get("vcodec"),
-                  "acodec": fmt.get("acodec"),
+                  "vcodec": video_codec,
+                  "acodec": audio_codec,
                   "tbr": fmt.get("tbr"),
+                  "has_video": has_video,
+                  "has_audio": has_audio,
+                  "client": query.get("c", [""])[0],
                   "url": media_url,
               })
 
-          def score(f):
-              has_video = f.get("vcodec") not in (None, "", "none")
-              has_audio = f.get("acodec") not in (None, "", "none")
+          def score(fmt):
+              # Prefer a single progressive MP4 with both video and audio,
+              # then higher resolution/bitrate formats.
               return (
-                  1 if has_video and has_audio else 0,
-                  f.get("height") or 0,
-                  f.get("tbr") or 0,
+                  1 if fmt["has_video"] and fmt["has_audio"] else 0,
+                  1 if fmt.get("ext") == "mp4" else 0,
+                  fmt.get("height") or 0,
+                  fmt.get("tbr") or 0,
               )
 
           formats.sort(key=score, reverse=True)
+
+          # Remove duplicate URLs while keeping the best-ranked order.
+          unique_formats = []
+          seen_urls = set()
+          for fmt in formats:
+              if fmt["url"] in seen_urls:
+                  continue
+              seen_urls.add(fmt["url"])
+              unique_formats.append(fmt)
 
           result = {
               "ok": True,
               "title": info.get("title") or "YouTube",
               "id": info.get("id"),
               "webpage_url": info.get("webpage_url") or url,
-              "formats": formats[:8],
+              "extractor": info.get("extractor"),
+              "formats": unique_formats[:8],
           }
 
           with open("result.json", "w", encoding="utf-8") as f:
@@ -145,7 +178,7 @@ jobs:
 
           token = os.environ.get("CHATWORK_API_TOKEN")
           if not token:
-              print("Neither CHATWORK_API_TOKEN nor CHATWORK_TOKEN is configured in GitHub Actions Secrets.")
+              print("CHATWORK_API_TOKEN is not configured in GitHub Actions Secrets.")
               sys.exit(1)
 
           room_id = os.environ["ROOM_ID"]
@@ -156,23 +189,32 @@ jobs:
               with open("result.json", encoding="utf-8") as f:
                   result = json.load(f)
           except Exception:
-              result = {"ok": False, "error": "yt-dlp did not produce a result."}
+              result = {
+                  "ok": False,
+                  "error": "yt-dlp did not produce a result.",
+              }
 
           prefix = f"[rp aid={account_id} to={room_id}-{message_id}]"
 
           if not result.get("ok"):
+              error = str(result.get("error", "unknown error"))
               body = (
-                  prefix + "\n"
-                  "YouTube URLの取得に失敗しました。\n"
-                  "[code]" + str(result.get("error", "unknown error")) + "[/code]"
+                  prefix
+                  + "\n[info][title]YouTube URL取得失敗[/title]\n"
+                  + "[code]"
+                  + error
+                  + "[/code]\n[/info]"
               )
           else:
               lines = [
                   prefix,
                   "[info][title]" + str(result.get("title", "YouTube")) + "[/title]",
+                  "ID: " + str(result.get("id") or "-"),
+                  "client: web_embedded",
               ]
 
               formats = result.get("formats", [])
+
               if not formats:
                   lines.append("googlevideo.com の取得可能な形式が見つかりませんでした。")
               else:
@@ -181,8 +223,15 @@ jobs:
                       audio = fmt.get("acodec") or "-"
                       resolution = fmt.get("resolution") or "-"
                       ext = fmt.get("ext") or "-"
+                      itag = fmt.get("itag") or fmt.get("format_id") or "-"
+                      fps = fmt.get("fps") or "-"
+                      client = fmt.get("client") or "-"
+
                       lines.append(
-                          f"\n[{i}] {resolution} / {ext} / video={video} / audio={audio}"
+                          f"\n[{i}] itag={itag} / {resolution} / {ext} / fps={fps}"
+                      )
+                      lines.append(
+                          f"video={video} / audio={audio} / client={client}"
                       )
                       lines.append("[url]" + fmt["url"] + "[/url]")
 
