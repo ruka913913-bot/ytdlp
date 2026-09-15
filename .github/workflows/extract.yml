@@ -60,11 +60,11 @@ jobs:
 
           url = os.environ["YOUTUBE_URL"]
 
-          # Try supported clients in order. web_embedded is the closest match
-          # to the direct googlevideo URLs we want; android_vr is a legitimate
-          # yt-dlp fallback when the embedded client is unavailable.
-          clients = ["web_embedded", "android_vr"]
-          last_error = None
+          # Try additional official yt-dlp YouTube clients in order.
+          # Some clients can expose direct Google Video Server formats without
+          # the same requirements as the web client. Availability varies by video.
+          clients = ["tv", "tv_downgraded", "web_embedded", "android_vr"]
+          last_errors = []
 
           info = None
           selected_client = None
@@ -97,16 +97,16 @@ jobs:
                       selected_client = client
                       break
 
-                  last_error = f"{client}: no googlevideo.com media formats"
+                  last_errors.append(f"{client}: no googlevideo.com media formats")
               except Exception as exc:
-                  last_error = f"{client}: {exc}"
+                  last_errors.append(f"{client}: {exc}")
 
           if info is None:
               with open("result.json", "w", encoding="utf-8") as f:
                   json.dump(
                       {
                           "ok": False,
-                          "error": last_error or "No supported YouTube client succeeded.",
+                          "error": "No supported YouTube client produced googlevideo.com media formats. " + " | ".join(last_errors),
                           "input_url": url,
                       },
                       f,
