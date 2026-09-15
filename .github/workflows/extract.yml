@@ -34,8 +34,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install yt-dlp
-        run: python -m pip install --disable-pip-version-check --no-input --upgrade yt-dlp
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp with YouTube support
+        run: python -m pip install --disable-pip-version-check --no-input --upgrade "yt-dlp[default]"
 
       - name: Extract media formats
         id: extract
@@ -46,6 +51,7 @@ jobs:
           import json
           import os
           import sys
+          from urllib.parse import urlparse
           import yt_dlp
 
           url = os.environ["YOUTUBE_URL"]
@@ -62,16 +68,21 @@ jobs:
                   info = ydl.extract_info(url, download=False)
           except Exception as exc:
               with open("result.json", "w", encoding="utf-8") as f:
-                  json.dump({
-                      "ok": False,
-                      "error": str(exc),
-                  }, f, ensure_ascii=False)
+                  json.dump({"ok": False, "error": str(exc)}, f, ensure_ascii=False)
               sys.exit(0)
 
           formats = []
           for fmt in info.get("formats", []):
               media_url = fmt.get("url")
-              if not media_url or "googlevideo.com" not in media_url:
+              if not media_url:
+                  continue
+
+              try:
+                  hostname = (urlparse(media_url).hostname or "").lower()
+              except Exception:
+                  continue
+
+              if not hostname.endswith(".googlevideo.com"):
                   continue
 
               formats.append({
@@ -87,8 +98,6 @@ jobs:
                   "url": media_url,
               })
 
-          # Prefer formats that contain both video and audio, then higher
-          # resolution/bitrate. Keep the result reasonably small for Chatwork.
           def score(f):
               has_video = f.get("vcodec") not in (None, "", "none")
               has_audio = f.get("acodec") not in (None, "", "none")
@@ -140,10 +149,7 @@ jobs:
               with open("result.json", encoding="utf-8") as f:
                   result = json.load(f)
           except Exception:
-              result = {
-                  "ok": False,
-                  "error": "yt-dlp did not produce a result."
-              }
+              result = {"ok": False, "error": "yt-dlp did not produce a result."}
 
           prefix = f"[rp aid={account_id} to={room_id}-{message_id}]"
 
@@ -169,12 +175,12 @@ jobs:
                       resolution = fmt.get("resolution") or "-"
                       ext = fmt.get("ext") or "-"
                       lines.append(
-                          f"\\n[{i}] {resolution} / {ext} / video={video} / audio={audio}"
+                          f"\n[{i}] {resolution} / {ext} / video={video} / audio={audio}"
                       )
                       lines.append("[url]" + fmt["url"] + "[/url]")
 
               lines.append("[/info]")
-              body = "\\n".join(lines)
+              body = "\n".join(lines)
 
           data = urllib.parse.urlencode({
               "body": body,
